@@ -1,0 +1,81 @@
+from telegram import Update
+from telegram.ext import ContextTypes
+from bot.database import get_conn, get_or_create_user
+from bot.keyboards import orders_menu, main_menu, back_button
+
+async def handle_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "orders_menu":
+        await query.edit_message_text(
+            "🛒 Buyurtmalar bo'limi:",
+            reply_markup=orders_menu()
+        )
+    
+    elif query.data == "orders_new":
+        context.user_data['state'] = 'waiting_customer_name'
+        await query.edit_message_text(
+            "Mijoz ismini kiriting:",
+            reply_markup=back_button()
+        )
+    
+    elif query.data == "orders_list":
+        user_id = get_or_create_user(
+            update.effective_user.id, 
+            update.effective_user.full_name
+        )
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute('''SELECT customer_name, total, status, created_at 
+                     FROM orders WHERE user_id = ? 
+                     ORDER BY created_at DESC LIMIT 10''', (user_id,))
+        orders = c.fetchall()
+        conn.close()
+        
+        if not orders:
+            text = "📋 Buyurtmalar yo'q."
+        else:
+            text = "📋 So'nggi buyurtmalar:\n\n"
+            for o in orders:
+                text += f"👤 {o[0]} — {o[1]:,.0f} so'm ({o[2]})\n"
+        
+        await query.edit_message_text(text, reply_markup=back_button())
+    
+    elif query.data == "main_menu":
+        await query.edit_message_text(
+            "Asosiy menyu:",
+            reply_markup=main_menu()
+        )
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get('state')
+    
+    if state == 'waiting_customer_name':
+        context.user_data['customer_name'] = update.message.text
+        context.user_data['state'] = 'waiting_amount'
+        await update.message.reply_text("Buyurtma summasini kiriting (so'mda):")
+    
+    elif state == 'waiting_amount':
+        try:
+            amount = float(update.message.text.replace(',', ''))
+            user_id = get_or_create_user(
+                update.effective_user.id,
+                update.effective_user.full_name
+            )
+            conn = get_conn()
+            c = conn.cursor()
+            c.execute('''INSERT INTO orders (user_id, customer_name, total) 
+                         VALUES (?, ?, ?)''',
+                      (user_id, context.user_data['customer_name'], amount))
+            conn.commit()
+            conn.close()
+            context.user_data['state'] = None
+            await update.message.reply_text(
+                f"✅ Buyurtma saqlandi!\n"
+                f"👤 {context.user_data['customer_name']}\n"
+                f"💰 {amount:,.0f} so'm",
+                reply_markup=main_menu()
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Faqat raqam kiriting!")
